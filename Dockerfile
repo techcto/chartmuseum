@@ -10,6 +10,8 @@ COPY . /go/src/github.com/helm/chartmuseum
 
 WORKDIR /go/src/github.com/helm/chartmuseum
 
+RUN go mod tidy
+
 RUN CGO_ENABLED=0 GO111MODULE=on go build \
    -v --ldflags="-w -X main.Version=${version} -X main.Revision=${revision}" \
    -o /chartmuseum \
