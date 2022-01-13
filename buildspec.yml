@@ -1,0 +1,14 @@
+---
+version: 0.2
+
+phases:
+  build:
+    commands:
+      - echo "Login to DockerHub!"
+      - docker login -u $DOCKER_HUB_USER -p $DOCKER_HUB_PASSWORD
+      - chmod 700 build.sh
+      - ./build.sh . techcto chartmuseum
+
+  post_build:
+    commands:
+      - echo "Docker image pushed on `date`"
