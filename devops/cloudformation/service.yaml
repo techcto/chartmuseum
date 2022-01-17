@@ -1,0 +1,360 @@
+Description: >
+  This template deploys Chart Museum for Fargate. 
+
+Parameters: 
+  EnvironmentName:
+      Description: An environment name that will be prefixed to resource names
+      Type: String
+
+  VPC:
+      Description: The VPC that the ECS cluster is deployed to
+      Type: AWS::EC2::VPC::Id
+      
+  Cluster:
+      Description: Please provide the ECS Cluster ID that this service should run on
+      Type: String
+
+  ClusterArn:
+      Description: ECS Cluster ARN
+      Type: String
+
+  LoadBalancer:
+      Description: The LoadBalancer
+      Type: String
+
+  LoadBalancerSecurityGroup:
+      Description: Select the Load Balancer Security Group to use for the cluster hosts
+      Type: AWS::EC2::SecurityGroup::Id
+
+  Subnets:
+      Description: Choose which subnets this cluster should be deployed to
+      Type: List<AWS::EC2::Subnet::Id>
+
+  Path: 
+      Description: The path to register with the Application Load Balancer
+      Type: String
+      Default: /
+
+  ServiceRole:
+      Description: The Application Load Balancer Service Role
+      Type: String
+
+  AppContainer:
+    Description: Chart Museum container image
+    Type: String
+    Default: "techcto/chartmuseum"
+
+  AppContainerPort:
+    Type: Number
+    Default: 8080
+    Description: What port number the application inside the docker container is binding to
+
+  CertificateArn:
+    Type: String
+    Description: SSL cert for HTTPS listener that matches the FQDN
+    Default: ''
+
+  ServiceCpu:
+    Type: Number
+    Default: 1024
+    Description: How much CPU to give the container. 1024 is 1 CPU
+
+  ServiceMemory:
+    Type: Number
+    Default: 2048
+    Description: How much memory in megabytes to give the service
+
+  ContainerCpu:
+    Type: Number
+    Default: 256
+    Description: How much CPU to give the container. 1024 is 1 CPU
+
+  ContainerMemory:
+    Type: Number
+    Default: 512
+    Description: How much memory in megabytes to give the container
+
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: How many copies of the service task to run
+
+  CredentialsParameter:
+    Type: String
+    Description: DockerHub Secret
+    Default: ''
+
+Conditions:
+  UseHTTPS: !Not [!Equals [ !Ref CertificateArn, "" ]]
+  UseHTTP: !Equals [ !Ref CertificateArn, "" ]
+
+Resources:
+
+    AppBucket:
+        Type: AWS::S3::Bucket
+        Properties:
+            BucketName: !Join ['-', [!Ref 'EnvironmentName', 'charts']]
+            AccessControl: 'BucketOwnerFullControl'
+            Tags:
+                -
+                  Key: 'Name'
+                  Value: !Join ['-', [!Ref 'EnvironmentName', 'S3']]
+        DeletionPolicy: 'Delete'
+
+    CloudWatchLogsGroup:
+        Type: AWS::Logs::LogGroup
+        Properties: 
+            LogGroupName: !Ref AWS::StackName
+            RetentionInDays: 30  
+            
+    TaskExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal:
+                    Service: [ecs-tasks.amazonaws.com]
+                Action: ['sts:AssumeRole']
+        Path: /
+        Policies:
+              - PolicyName: AmazonECSTaskExecutionRolePolicy
+                PolicyDocument:
+                    Statement:
+                      - Effect: Allow
+                        Action:
+                        # Allow the ECS Tasks to download images from ECR
+                        - 'ecr:GetAuthorizationToken'
+                        - 'ecr:BatchCheckLayerAvailability'
+                        - 'ecr:GetDownloadUrlForLayer'
+                        - 'ecr:BatchGetImage'
+                        - 'secretsmanager:GetSecretValue'
+                        # Allow the ECS tasks to upload logs to CloudWatch
+                        - 'logs:CreateLogStream'
+                        - 'logs:PutLogEvents'
+                        Resource: '*'
+
+    TaskRole:
+      Type: AWS::IAM::Role
+      Properties:
+          AssumeRolePolicyDocument:
+              Version: 2012-10-17
+              Statement:
+              - {Action: "sts:AssumeRole", Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}}
+          Path: "/"
+          Policies: 
+              - 
+                  PolicyName: "s3-inline"
+                  PolicyDocument: 
+                      Version: "2012-10-17"
+                      Statement: 
+                          -   
+                              Effect: Allow
+                              Action:
+                                - 's3:ListBucket'
+                              Resource: !Join ['', ['arn:aws:s3:::', !Ref 'AppBucket']]
+                          -   
+                              Effect: Allow
+                              Action:
+                                - 's3:DeleteObject'
+                                - 's3:GetObject'
+                                - 's3:PutObject'
+                              Resource: !Join ['', ['arn:aws:s3:::', !Ref 'AppBucket', /*]]
+
+              - 
+                  PolicyName: "iam-inline"
+                  PolicyDocument: 
+                      Version: "2012-10-17"
+                      Statement: 
+                          - 
+                              Effect: "Allow"
+                              Action: [ "aws-marketplace:RegisterUsage" ]
+                              Resource: "*"
+                          - 
+                              Effect: "Allow"
+                              Action: [ "kms:GetPublicKey" ]
+                              Resource: "*"
+                          - 
+                              Effect: "Allow"
+                              Action: [ "license-manager:*" ]
+                              Resource: "*"
+
+    TaskDefinition:
+      Type: AWS::ECS::TaskDefinition
+      Properties:
+        Family: chart-museum
+        Cpu: !Ref 'ServiceCpu'
+        Memory: !Ref 'ServiceMemory'
+        NetworkMode: awsvpc
+        RequiresCompatibilities:
+          - FARGATE
+        ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+        TaskRoleArn: !GetAtt TaskRole.Arn
+        ContainerDefinitions:
+          - Name: app
+            Cpu: !Ref 'ContainerCpu'
+            Memory: !Ref 'ContainerMemory'
+            Image: !Ref 'AppContainer'
+            PortMappings:
+              - ContainerPort: !Ref 'AppContainerPort'
+            Environment:
+                - Name: DEBUG
+                  Value: 1
+                - Name: APP_ENV
+                  Value: 'prod'
+                - Name: STORAGE
+                  Value: 'amazon'
+                - Name: STORAGE_AMAZON_BUCKET
+                  Value: !Ref AppBucket
+                - Name: STORAGE_AMAZON_PREFIX
+                  Value: ''
+                - Name: STORAGE_AMAZON_REGION
+                  Value: !Ref AWS::Region
+            LogConfiguration:
+                LogDriver: awslogs
+                Options:
+                    awslogs-group: !Ref AWS::StackName
+                    awslogs-region: !Ref AWS::Region
+                    awslogs-stream-prefix: charts
+
+    Service:
+      Type: AWS::ECS::Service
+      DependsOn: TargetGroup
+      Properties:
+        ServiceName: chart-museum
+        Cluster: !Ref Cluster
+        LaunchType: FARGATE
+        DeploymentConfiguration:
+          MaximumPercent: 200
+          MinimumHealthyPercent: 75
+        DesiredCount: !Ref 'DesiredCount'
+        NetworkConfiguration:
+          AwsvpcConfiguration:
+            SecurityGroups:
+              - !Ref 'ContainerSecurityGroup'
+              - !Ref LoadBalancerSecurityGroup
+            Subnets: !Ref Subnets
+            AssignPublicIp: ENABLED
+        TaskDefinition: !Ref 'TaskDefinition'
+        LoadBalancers:
+          - ContainerName: app
+            ContainerPort: !Ref 'AppContainerPort'
+            TargetGroupArn: !Ref 'TargetGroup'
+
+    ContainerSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Access to the Fargate containers
+        VpcId: !Ref VPC
+
+    EcsSecurityGroupIngressFromPublicALB:
+      Type: AWS::EC2::SecurityGroupIngress
+      Properties:
+        Description: Ingress from the public ALB
+        GroupId: !Ref 'ContainerSecurityGroup'
+        IpProtocol: -1
+        SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+    EcsSecurityGroupIngressFromSelf:
+      Type: AWS::EC2::SecurityGroupIngress
+      Properties:
+        Description: Ingress from other containers in the same security group
+        GroupId: !Ref 'ContainerSecurityGroup'
+        IpProtocol: -1
+        SourceSecurityGroupId: !Ref 'ContainerSecurityGroup'
+
+    TargetGroup:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        HealthCheckIntervalSeconds: 6
+        HealthCheckPath: /
+        HealthCheckProtocol: HTTP
+        HealthCheckTimeoutSeconds: 5
+        HealthyThresholdCount: 2
+        TargetType: ip
+        Matcher: 
+                HttpCode: 200
+        Name: !Join 
+                - '-'
+                - - !Ref 'EnvironmentName'
+                  - charts
+        Port: !Ref 'AppContainerPort'
+        Protocol: HTTP
+        UnhealthyThresholdCount: 2
+        VpcId: !Ref VPC
+
+    SecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties: 
+          VpcId: !Ref VPC
+          GroupDescription: Access to the load balancer
+          SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 8080
+                ToPort: 8080
+                CidrIp: 0.0.0.0/0
+          Tags: 
+              - Key: Name
+                Value: !Sub ${EnvironmentName}
+
+    LoadBalancerSecurityGroupIngressFromAPI:
+      Type: AWS::EC2::SecurityGroupIngress
+      Properties:
+        Description: Ingress from public to container
+        GroupId: !Ref 'LoadBalancerSecurityGroup'
+        SourceSecurityGroupId: !Ref 'SecurityGroup'
+        IpProtocol: tcp
+        FromPort: 8080
+        ToPort: 8080
+
+    Listener:
+      Type: 'AWS::ElasticLoadBalancingV2::Listener'
+      Condition: UseHTTP
+      Properties:
+          DefaultActions:
+              - Type: forward
+                TargetGroupArn: !Ref TargetGroup
+          LoadBalancerArn: !Ref LoadBalancer
+          Port: 8080
+          Protocol: HTTP
+
+    ListenerSSL:
+      Type: 'AWS::ElasticLoadBalancingV2::Listener'
+      Condition: UseHTTPS
+      Properties:
+          Certificates: 
+              - CertificateArn: !Ref CertificateArn
+          DefaultActions:
+              - Type: forward
+                TargetGroupArn: !Ref TargetGroup
+          LoadBalancerArn: !Ref LoadBalancer
+          Port: 8080
+          Protocol: HTTPS
+    
+    ListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Condition: UseHTTP
+      Properties:
+          ListenerArn: !Ref Listener
+          Priority: 1
+          Conditions:
+              - Field: path-pattern
+                Values: 
+                  - !Ref Path
+          Actions:
+              - TargetGroupArn: !Ref TargetGroup
+                Type: forward
+
+    ListenerSSLRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Condition: UseHTTPS
+      Properties:
+          ListenerArn: !Ref ListenerSSL
+          Priority: 2
+          Conditions:
+              - Field: path-pattern
+                Values: 
+                  - !Ref Path
+          Actions:
+              - TargetGroupArn: !Ref TargetGroup
+                Type: forward
