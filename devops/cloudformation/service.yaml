@@ -315,7 +315,7 @@ Resources:
               - Type: forward
                 TargetGroupArn: !Ref TargetGroup
           LoadBalancerArn: !Ref LoadBalancer
-          Port: 8080
+          Port: 80
           Protocol: HTTP
 
     ListenerSSL:
@@ -328,7 +328,7 @@ Resources:
               - Type: forward
                 TargetGroupArn: !Ref TargetGroup
           LoadBalancerArn: !Ref LoadBalancer
-          Port: 8080
+          Port: 443
           Protocol: HTTPS
     
     ListenerRule:
